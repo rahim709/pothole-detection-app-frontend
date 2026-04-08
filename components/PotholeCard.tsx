@@ -1,25 +1,38 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { Marker } from 'react-native-maps';
+import { Ionicons } from '@expo/vector-icons'; // Added this import
 
 interface PotholeProps {
   coordinate: { latitude: number; longitude: number };
   severity: string;
-  speed?: number; // Added to handle the speed you want to measure
+  speed?: number;
 }
 
-export default function PotholeCard({ coordinate, severity, speed }: PotholeProps) {
+export default function PotholeCard({ coordinate, severity }: PotholeProps) {
   return (
     <Marker coordinate={coordinate}>
-      <View style={[styles.marker, { borderColor: severity === 'High' ? 'red' : 'orange' }]}>
-        <Text style={{ fontSize: 14 }}>⚠️</Text>
-        {speed !== undefined && <Text style={styles.speedText}>{speed.toFixed(1)}</Text>}
+      <View style={[
+        styles.marker, 
+        { borderColor: severity === 'High' ? '#ef4444' : '#f59e0b' }
+      ]}>
+        <Ionicons 
+          name="warning" 
+          size={16} 
+          color={severity === 'High' ? '#ef4444' : '#f59e0b'} 
+        />
       </View>
     </Marker>
   );
 }
 
 const styles = StyleSheet.create({
-  marker: { backgroundColor: 'white', padding: 5, borderRadius: 20, borderWidth: 2, alignItems: 'center' },
-  speedText: { fontSize: 8, fontWeight: 'bold' }
+  marker: { 
+    backgroundColor: 'white', 
+    padding: 5, 
+    borderRadius: 20, 
+    borderWidth: 2, 
+    alignItems: 'center',
+    justifyContent: 'center'
+  }
 });

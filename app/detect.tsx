@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator } from 'react-native';
 import { Accelerometer, Gyroscope } from 'expo-sensors';
 import * as Location from 'expo-location';
+// Use the legacy import to support writeAsStringAsync in Expo v54+
 import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing'; // Added for opening the file immediately
+import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_POTHOLE_API_URL || 'YOUR_POTHOLE_API_URL';
 
 export default function DetectionScreen() {
   const [isMonitoring, setIsMonitoring] = useState(false);
-  const [recordedPoints, setRecordedPoints] = useState(0); // Live counter
+  const [isUploading, setIsUploading] = useState(false);
+  const [recordedPoints, setRecordedPoints] = useState(0);
   
   const [displayData, setDisplayData] = useState({
     speed: 0, ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0
@@ -26,13 +30,13 @@ export default function DetectionScreen() {
       setRecordedPoints(0);
       sessionData.current = [];
 
-      Accelerometer.setUpdateInterval(50); 
+      Accelerometer.setUpdateInterval(100); 
       accelSub = Accelerometer.addListener(data => {
         lastAccel.current = data;
         setDisplayData(prev => ({ ...prev, ax: data.x, ay: data.y, az: data.z }));
       });
 
-      Gyroscope.setUpdateInterval(50);
+      Gyroscope.setUpdateInterval(100);
       gyroSub = Gyroscope.addListener(data => {
         lastGyro.current = data;
         setDisplayData(prev => ({ ...prev, gx: data.x, gy: data.y, gz: data.z }));
@@ -52,7 +56,6 @@ export default function DetectionScreen() {
       })();
 
       const interval = setInterval(() => {
-        // Only record if we have a valid GPS lock to prevent empty-looking CSVs
         if (lastLocation.current.lat !== 0) {
           sessionData.current.push({
             timestamp: new Date().toISOString(),
@@ -79,14 +82,17 @@ export default function DetectionScreen() {
     }
   }, [isMonitoring]);
 
-  const saveAndOpenSession = async () => {
+  const processSessionData = async () => {
     if (sessionData.current.length === 0) {
-      Alert.alert("No Data", "Wait for GPS lock (green text) before stopping.");
+      Alert.alert("No Data", "No points captured. Wait for GPS lock.");
+      setIsMonitoring(false);
       return;
     }
 
+    setIsUploading(true);
     try {
-      const header = "timestamp,latitude,longitude,speed,accelerometerX,accelerometerY,accelerometerZ,gyroX,gyroY,gyroZ\n";
+      // 1. GENERATE CSV CONTENT
+      const header = "timestamp,latitude,longitude,speed,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
       const rows = sessionData.current.map(d => 
         `${d.timestamp},${d.latitude},${d.longitude},${d.speed},${d.accelerometerX},${d.accelerometerY},${d.accelerometerZ},${d.gyroX},${d.gyroY},${d.gyroZ}`
       ).join('\n');
@@ -94,53 +100,73 @@ export default function DetectionScreen() {
       const fileName = `Session_${Date.now()}.csv`;
       const fileUri = FileSystem.documentDirectory + fileName;
 
-      // Write with UTF8 and await fully
-      await FileSystem.writeAsStringAsync(fileUri, header + rows, { encoding: FileSystem.EncodingType.UTF8 });
-      
-      const fileInfo = await FileSystem.getInfoAsync(fileUri);
-      
-      Alert.alert("File Saved", `Saved ${sessionData.current.length} points.`, [
-        { text: "Open File", onPress: () => Sharing.shareAsync(fileUri) },
-        { text: "OK" }
-      ]);
-      
+      // 2. SAVE LOCALLY (Legacy API)
+      await FileSystem.writeAsStringAsync(fileUri, header + rows, { encoding: 'utf8' });
+
+      // 3. UPLOAD TO BACKEND
+      const payload = {
+        latitude: lastLocation.current.lat,
+        longitude: lastLocation.current.lon,
+        sensorData: sessionData.current.slice(-100), 
+      };
+
+      const response = await fetch(BACKEND_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+
+      Alert.alert(
+        "Session Saved", 
+        `Data stored locally.\nAI Result: ${result.message}`,
+        [
+          { text: "Export CSV", onPress: () => Sharing.shareAsync(fileUri) },
+          { text: "Close" }
+        ]
+      );
+
+    } catch (e) {
+      console.error(e);
+      Alert.alert("Error", "Check your internet and try again.");
+    } finally {
+      setIsUploading(false);
+      setIsMonitoring(false);
       sessionData.current = [];
       setRecordedPoints(0);
-    } catch (e) {
-      Alert.alert("Error", "Could not save file.");
     }
   };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.headerTitle}>Live Pothole Detection</Text>
+      <Text style={styles.headerTitle}>Pothole Data Collector</Text>
       
       <View style={styles.speedCard}>
         <Text style={styles.speedValue}>{displayData.speed.toFixed(1)}</Text>
-        <Text style={styles.speedUnit}>m/s (Speed)</Text>
+        <Text style={styles.speedUnit}>m/s</Text>
       </View>
 
       <View style={styles.counterBox}>
         <Text style={[styles.statusText, { color: lastLocation.current.lat !== 0 ? '#10b981' : '#f59e0b' }]}>
-          {lastLocation.current.lat !== 0 ? "🛰️ GPS Locked" : "🛰️ Searching for GPS..."}
+          {lastLocation.current.lat !== 0 ? "🛰️ GPS Locked" : "🛰️ Searching GPS..."}
         </Text>
-        <Text style={styles.pointsText}>Points Captured: {recordedPoints}</Text>
-      </View>
-
-      <View style={styles.grid}>
-        <View style={styles.statBox}><Text style={styles.statLabel}>ACCEL: {displayData.ax.toFixed(2)} | {displayData.ay.toFixed(2)} | {displayData.az.toFixed(2)}</Text></View>
-        <View style={styles.statBox}><Text style={styles.statLabel}>GYRO: {displayData.gx.toFixed(2)} | {displayData.gy.toFixed(2)} | {displayData.gz.toFixed(2)}</Text></View>
+        <Text style={styles.pointsText}>Points: {recordedPoints}</Text>
       </View>
 
       <TouchableOpacity 
         style={[styles.btn, isMonitoring ? styles.stop : styles.start]}
         onPress={() => {
-          if (isMonitoring) saveAndOpenSession();
-          setIsMonitoring(!isMonitoring);
+          if (isMonitoring) processSessionData();
+          else setIsMonitoring(true);
         }}
+        disabled={isUploading}
       >
-        <Ionicons name={isMonitoring ? "stop-circle" : "play-circle"} size={28} color="white" />
-        <Text style={styles.btnText}>{isMonitoring ? "STOP & SAVE CSV" : "START MEASURING"}</Text>
+        {isUploading ? <ActivityIndicator color="white" /> : (
+          <Ionicons name={isMonitoring ? "stop-circle" : "play-circle"} size={28} color="white" />
+        )}
+        <Text style={styles.btnText}>
+          {isUploading ? "UPLOADING..." : isMonitoring ? "STOP & SAVE" : "START RECORDING"}
+        </Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -155,9 +181,6 @@ const styles = StyleSheet.create({
   counterBox: { marginBottom: 20, alignItems: 'center' },
   statusText: { fontWeight: 'bold', fontSize: 14, marginBottom: 5 },
   pointsText: { fontSize: 16, color: '#475569' },
-  grid: { width: '100%', marginBottom: 20 },
-  statBox: { backgroundColor: 'white', padding: 12, borderRadius: 10, marginBottom: 10, elevation: 1 },
-  statLabel: { fontSize: 13, fontFamily: 'monospace', color: '#1e293b' },
   btn: { flexDirection: 'row', width: '100%', padding: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', gap: 10 },
   start: { backgroundColor: '#10b981' },
   stop: { backgroundColor: '#ef4444' },
