@@ -113,7 +113,6 @@ const nominatimStyles = StyleSheet.create({
 });
 
 // ─── Decode ORS Polyline ──────────────────────────────────────────────────────
-// ORS returns GeoJSON coordinates as [lng, lat] arrays
 function orsToLatLng(coords: number[][]): { latitude: number; longitude: number }[] {
   return coords.map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
 }
@@ -131,9 +130,44 @@ export default function RouteMapScreen() {
 
   const mapRef = useRef<MapView>(null);
 
+  // ─── Helper: Snap Potholes to Nearest Road (Fixes GPS Drift) ──────────────
+  const snapPotholesToRoad = async (rawPotholes: any[]) => {
+    if (!rawPotholes || rawPotholes.length === 0) return [];
+
+    // Google Roads API allows up to 100 points per request.
+    const pointsToSnap = rawPotholes.slice(0, 100); 
+
+    const pathString = pointsToSnap.map(p => `${p.latitude},${p.longitude}`).join('|');
+    const url = `https://roads.googleapis.com/v1/snapToRoads?path=${pathString}&interpolate=false&key=${GOOGLE_MAPS_APIKEY}`;
+
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.snappedPoints) {
+        return pointsToSnap.map((pothole, index) => {
+          const snappedPoint = data.snappedPoints.find((sp: any) => sp.originalIndex === index);
+          if (snappedPoint) {
+            return {
+              ...pothole,
+              latitude: snappedPoint.location.latitude,
+              longitude: snappedPoint.location.longitude
+            };
+          }
+          return pothole;
+        });
+      }
+    } catch (error) {
+      console.error("Snap to Roads error:", error);
+    }
+    
+    return rawPotholes; 
+  };
+
   // ─── Get GPS + Potholes on Mount ──────────────────────────────────────────
   useEffect(() => {
     (async () => {
+      // 1. Get Location
       try {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
@@ -149,10 +183,15 @@ export default function RouteMapScreen() {
         setDebugText('GPS error — set origin manually');
       }
 
+      // 2. Fetch & Snap Potholes
       try {
         const response = await fetch(POTHOLE_API_URL);
         const data = await response.json();
-        setPotholes(Array.isArray(data) ? data : []);
+        
+        const validData = Array.isArray(data) ? data : [];
+        const snappedData = await snapPotholesToRoad(validData);
+        
+        setPotholes(snappedData);
       } catch (e) {
         console.error('Pothole Fetch Error:', e);
       } finally {
@@ -182,6 +221,7 @@ export default function RouteMapScreen() {
           [from.longitude, from.latitude],
           [to.longitude, to.latitude],
         ],
+        radiuses: [-1, -1] // <--- This is the crucial part that bypasses the 350m limit
       };
 
       const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
@@ -213,7 +253,6 @@ export default function RouteMapScreen() {
       setRouteInfo({ distance: `${distanceKm} km`, duration: `${durationMin} min` });
       setDebugText(`Route: ${distanceKm}km, ${durationMin}min ✅`);
 
-      // Fit map to route
       mapRef.current?.fitToCoordinates(latLngs, {
         edgePadding: { right: 50, bottom: 150, left: 50, top: 300 },
         animated: true,
