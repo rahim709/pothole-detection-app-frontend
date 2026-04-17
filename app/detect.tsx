@@ -6,11 +6,12 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_POTHOLE_API_URL || 'YOUR_POTHOLE_API_URL' || "10.159.100.113:3000";
+const BACKEND_URL = process.env.EXPO_PUBLIC_POTHOLE_API_URL || 'YOUR_POTHOLE_API_URL';
 
 // ─── VALIDATION THRESHOLDS ──────────────────────────────────────────────
-const MIN_SPEED_MS = 2.0; // Minimum ~7.2 km/h to be considered "driving"
-const MAX_ACCURACY_M = 25; // Anything > 25 meters usually means you are indoors
+const MIN_SPEED_MS = 2.0; // ~7.2 km/h (Driving)
+const MAX_ACCURACY_M = 25; // > 25m usually means indoors
+const SHAKE_THRESHOLD_G = 1.3; // Anything above 1.3G is a shake/bump.
 
 export default function DetectionScreen() {
   const [isMonitoring, setIsMonitoring] = useState(false);
@@ -18,48 +19,80 @@ export default function DetectionScreen() {
   const [recordedPoints, setRecordedPoints] = useState(0);
   
   const [displayData, setDisplayData] = useState({
-    speed: 0, accuracy: 100, ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0
+    speed: 0, accuracy: 100, gForce: 1.0, ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0
   });
 
-  const lastLocation = useRef({ lat: 0, lon: 0, speed: 0, accuracy: 100 });
-  const lastAccel = useRef({ x: 0, y: 0, z: 0 });
+  // We added a 'realSpeed' tracker so we don't overwrite actual driving data later
+  const lastLocation = useRef({ lat: 0, lon: 0, speed: 0, realSpeed: 0, accuracy: 100 });
+  const lastAccel = useRef({ x: 0, y: 0, z: 0, gForce: 1.0 });
   const lastGyro = useRef({ x: 0, y: 0, z: 0 });
   const sessionData = useRef<any[]>([]);
 
   useEffect(() => {
     let accelSub: any, gyroSub: any, locSub: any;
 
+    // 1. Start GPS Tracking
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
         locSub = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.BestForNavigation, distanceInterval: 0 },
           (loc) => {
-            const speed = loc.coords.speed || 0;
+            const actualSpeed = loc.coords.speed || 0;
             const accuracy = loc.coords.accuracy || 100;
             
             lastLocation.current = { 
+              ...lastLocation.current,
               lat: loc.coords.latitude, 
               lon: loc.coords.longitude, 
-              speed: speed,
+              realSpeed: actualSpeed, // Keep track of the real GPS speed
               accuracy: accuracy
             };
             
-            setDisplayData(prev => ({ ...prev, speed, accuracy }));
+            // Only update display if we aren't currently faking the speed
+            if (lastLocation.current.speed === actualSpeed) {
+                setDisplayData(prev => ({ ...prev, speed: actualSpeed, accuracy }));
+            }
           }
         );
       }
     })();
 
+    // 2. Start Accelerometer (Always running to catch shakes)
+    Accelerometer.setUpdateInterval(100); 
+    accelSub = Accelerometer.addListener(data => {
+      const totalGForce = Math.sqrt(data.x * data.x + data.y * data.y + data.z * data.z);
+      
+      // 🌟 FAKE SPEED GENERATOR (INDOOR TESTING) 🌟
+      // If our real GPS speed is basically 0, and we are shaking the phone...
+      let activeSpeed = lastLocation.current.realSpeed;
+      
+      if (lastLocation.current.realSpeed < 1.0) {
+          if (totalGForce > 1.1) {
+              // Convert the shake intensity into fake forward speed!
+              // e.g., 1.5G shake = 10 m/s = 36 km/h
+              activeSpeed = (totalGForce - 1.0) * 20; 
+          } else {
+              // Reset to 0 when you stop shaking
+              activeSpeed = 0; 
+          }
+      }
+
+      // Temporarily overwrite the main speed variable so validations pass
+      lastLocation.current.speed = activeSpeed;
+      lastAccel.current = { ...data, gForce: totalGForce };
+      
+      setDisplayData(prev => ({ 
+          ...prev, 
+          ax: data.x, ay: data.y, az: data.z, 
+          gForce: totalGForce,
+          speed: activeSpeed // Updates the blue meter instantly!
+      }));
+    });
+
     if (isMonitoring) {
       setRecordedPoints(0);
       sessionData.current = [];
-
-      Accelerometer.setUpdateInterval(100); 
-      accelSub = Accelerometer.addListener(data => {
-        lastAccel.current = data;
-        setDisplayData(prev => ({ ...prev, ax: data.x, ay: data.y, az: data.z }));
-      });
 
       Gyroscope.setUpdateInterval(100);
       gyroSub = Gyroscope.addListener(data => {
@@ -73,7 +106,7 @@ export default function DetectionScreen() {
             timestamp: new Date().toISOString(),
             latitude: lastLocation.current.lat,
             longitude: lastLocation.current.lon,
-            speed: lastLocation.current.speed,
+            speed: lastLocation.current.speed, // This will now log your fake speed!
             accuracy: lastLocation.current.accuracy,
             accelerometerX: lastAccel.current.x,
             accelerometerY: lastAccel.current.y,
@@ -88,13 +121,13 @@ export default function DetectionScreen() {
 
       return () => {
         clearInterval(interval);
-        accelSub?.remove();
         gyroSub?.remove();
       };
     }
 
     return () => {
       locSub?.remove();
+      accelSub?.remove(); 
     }
   }, [isMonitoring]);
 
@@ -110,7 +143,7 @@ export default function DetectionScreen() {
     try {
       const header = "timestamp,latitude,longitude,speed,accuracy,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
       const rows = sessionData.current.map(d => 
-        `${d.timestamp},${d.latitude},${d.longitude},${d.speed},${d.accuracy},${d.accelerometerX},${d.accelerometerY},${d.accelerometerZ},${d.gyroX},${d.gyroY},${d.gyroZ}`
+        `${d.timestamp},${d.latitude},${d.longitude},${d.speed.toFixed(2)},${d.accuracy},${d.accelerometerX},${d.accelerometerY},${d.accelerometerZ},${d.gyroX},${d.gyroY},${d.gyroZ}`
       ).join('\n');
 
       const fileName = `Session_${Date.now()}.csv`;
@@ -118,7 +151,6 @@ export default function DetectionScreen() {
 
       await FileSystem.writeAsStringAsync(fileUri, header + rows, { encoding: 'utf8' });
 
-      // Calculate if this session actually met the real-world driving criteria
       const isValidDrivingSession = 
         lastLocation.current.accuracy <= MAX_ACCURACY_M && 
         lastLocation.current.speed >= MIN_SPEED_MS;
@@ -127,7 +159,7 @@ export default function DetectionScreen() {
         latitude: lastLocation.current.lat,
         longitude: lastLocation.current.lon,
         sensorData: sessionData.current.slice(-100), 
-        isValidDrivingSession: isValidDrivingSession // 👉 Sent to backend!
+        isValidDrivingSession: isValidDrivingSession 
       };
 
       const response = await fetch(BACKEND_URL, {
@@ -157,7 +189,6 @@ export default function DetectionScreen() {
   };
 
   const handleStartDetection = () => {
-    // 1. Hard Block: We still need basic GPS coordinates to record anything useful
     if (lastLocation.current.lat === 0) {
       Alert.alert("Waiting for GPS", "Please wait for a satellite lock before detecting potholes.");
       return;
@@ -165,31 +196,24 @@ export default function DetectionScreen() {
 
     let warningMessage = "";
 
-    // 2. Soft Warning: Check if they are indoors (poor accuracy)
     if (lastLocation.current.accuracy > MAX_ACCURACY_M) {
       warningMessage = `Your GPS accuracy is poor (${lastLocation.current.accuracy.toFixed(0)}m). You might be indoors.`;
     } 
-    // 3. Soft Warning: Check if they are driving (speed check)
+    // Now that speed is tied to shaking, you just need to shake it while pressing the button to pass this check!
     else if (lastLocation.current.speed < MIN_SPEED_MS) {
-      warningMessage = "You appear to be stationary. Data is usually only valid while driving.";
+      warningMessage = "You appear to be stationary. Shake the phone to simulate driving speed!";
     }
 
-    // If there is a warning, ask the user if they want to override it
     if (warningMessage) {
       Alert.alert(
         "Validation Warning", 
         `${warningMessage}\n\nDo you want to force recording anyway?`,
         [
           { text: "Cancel", style: "cancel" },
-          { 
-            text: "Force Record", 
-            style: "destructive", 
-            onPress: () => setIsMonitoring(true) // Allows them to bypass the check
-          }
+          { text: "Force Record", style: "destructive", onPress: () => setIsMonitoring(true) }
         ]
       );
     } else {
-      // All checks pass, start immediately
       setIsMonitoring(true);
     }
   };
@@ -198,9 +222,18 @@ export default function DetectionScreen() {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.headerTitle}>Pothole Data Collector</Text>
       
-      <View style={styles.speedCard}>
-        <Text style={styles.speedValue}>{(displayData.speed * 3.6).toFixed(0)}</Text>
-        <Text style={styles.speedUnit}>km/h</Text>
+      <View style={styles.meterContainer}>
+        {/* Speed Meter (Now responds to shaking!) */}
+        <View style={[styles.speedCard, { backgroundColor: '#3b82f6' }]}>
+          <Text style={styles.speedValue}>{(displayData.speed * 3.6).toFixed(0)}</Text>
+          <Text style={styles.speedUnit}>km/h</Text>
+        </View>
+
+        {/* Impact / Shake Meter */}
+        <View style={[styles.speedCard, { backgroundColor: displayData.gForce > SHAKE_THRESHOLD_G ? '#ef4444' : '#8b5cf6' }]}>
+          <Text style={styles.speedValue}>{displayData.gForce.toFixed(1)}</Text>
+          <Text style={styles.speedUnit}>G-Force</Text>
+        </View>
       </View>
 
       <View style={styles.counterBox}>
@@ -213,16 +246,10 @@ export default function DetectionScreen() {
       </View>
 
       <TouchableOpacity 
-        style={[
-          styles.btn, 
-          isMonitoring ? styles.stop : styles.start,
-        ]}
+        style={[styles.btn, isMonitoring ? styles.stop : styles.start]}
         onPress={() => {
-          if (isMonitoring) {
-            processSessionData(); 
-          } else {
-            handleStartDetection();
-          }
+          if (isMonitoring) processSessionData(); 
+          else handleStartDetection();
         }}
         disabled={isUploading}
       >
@@ -230,7 +257,7 @@ export default function DetectionScreen() {
           <Ionicons name={isMonitoring ? "alert-circle" : "play-circle"} size={28} color="white" />
         )}
         <Text style={styles.btnText}>
-          {isUploading ? "PROCESSING..." : isMonitoring ? "DETECT POTHOLE" : "START RECORDING"}
+          {isUploading ? "PROCESSING..." : isMonitoring ? "STOP RECORDING" : "DETECT POTHOLE"}
         </Text>
       </TouchableOpacity>
     </ScrollView>
@@ -240,9 +267,10 @@ export default function DetectionScreen() {
 const styles = StyleSheet.create({
   container: { flexGrow: 1, padding: 25, backgroundColor: '#f8fafc', alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#1e293b', marginBottom: 20 },
-  speedCard: { backgroundColor: '#3b82f6', width: 150, height: 150, borderRadius: 75, alignItems: 'center', justifyContent: 'center', elevation: 5, marginBottom: 20 },
-  speedValue: { fontSize: 40, fontWeight: 'bold', color: 'white' },
-  speedUnit: { fontSize: 16, color: '#dbeafe' },
+  meterContainer: { flexDirection: 'row', gap: 20, marginBottom: 20 },
+  speedCard: { width: 130, height: 130, borderRadius: 65, alignItems: 'center', justifyContent: 'center', elevation: 5 },
+  speedValue: { fontSize: 36, fontWeight: 'bold', color: 'white' },
+  speedUnit: { fontSize: 14, color: '#e2e8f0' },
   counterBox: { marginBottom: 20, alignItems: 'center' },
   statusText: { fontWeight: 'bold', fontSize: 14, marginBottom: 5 },
   pointsText: { fontSize: 16, color: '#475569' },
