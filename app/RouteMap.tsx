@@ -134,7 +134,6 @@ export default function RouteMapScreen() {
   const snapPotholesToRoad = async (rawPotholes: any[]) => {
     if (!rawPotholes || rawPotholes.length === 0) return [];
 
-    // Google Roads API allows up to 100 points per request.
     const pointsToSnap = rawPotholes.slice(0, 100); 
 
     const pathString = pointsToSnap.map(p => `${p.latitude},${p.longitude}`).join('|');
@@ -167,7 +166,6 @@ export default function RouteMapScreen() {
   // ─── Get GPS + Potholes on Mount ──────────────────────────────────────────
   useEffect(() => {
     (async () => {
-      // 1. Get Location
       try {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
@@ -183,7 +181,6 @@ export default function RouteMapScreen() {
         setDebugText('GPS error — set origin manually');
       }
 
-      // 2. Fetch & Snap Potholes
       try {
         const response = await fetch(POTHOLE_API_URL);
         const data = await response.json();
@@ -221,7 +218,7 @@ export default function RouteMapScreen() {
           [from.longitude, from.latitude],
           [to.longitude, to.latitude],
         ],
-        radiuses: [-1, -1] // <--- This is the crucial part that bypasses the 350m limit
+        radiuses: [-1, -1]
       };
 
       const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
@@ -266,7 +263,6 @@ export default function RouteMapScreen() {
     }
   };
 
-  // ─── Clear Route ────────────────────────────────────────────────────────────
   const clearRoute = () => {
     setDestination(null);
     setRouteCoords([]);
@@ -285,8 +281,6 @@ export default function RouteMapScreen() {
 
   return (
     <View style={styles.container}>
-
-      {/* ── MAP ── */}
       <MapView
         ref={mapRef}
         provider={PROVIDER_GOOGLE}
@@ -299,36 +293,24 @@ export default function RouteMapScreen() {
             : { latitude: 13.0827, longitude: 80.2707, latitudeDelta: 0.1, longitudeDelta: 0.1 }
         }
       >
-        {/* ── ROUTE POLYLINE (ORS) ── */}
         {routeCoords.length > 0 && (
-          <Polyline
-            coordinates={routeCoords}
-            strokeWidth={5}
-            strokeColor="#3b82f6"
-          />
+          <Polyline coordinates={routeCoords} strokeWidth={5} strokeColor="#3b82f6" />
         )}
 
-        {/* ── ORIGIN MARKER ── */}
-        {origin && (
-          <Marker coordinate={origin} title="Start" pinColor="blue" />
-        )}
+        {origin && <Marker coordinate={origin} title="Start" pinColor="blue" />}
+        {destination && <Marker coordinate={destination} title="End" pinColor="red" />}
 
-        {/* ── DESTINATION MARKER ── */}
-        {destination && (
-          <Marker coordinate={destination} title="End" pinColor="red" />
-        )}
-
-        {/* ── POTHOLE MARKERS ── */}
+        {/* ── POTHOLE MARKERS (FIXED) ── */}
         {potholes.map((p, index) => (
           <PotholeCard
             key={p.id || `pothole-${index}`}
             coordinate={{ latitude: p.latitude, longitude: p.longitude }}
-            severity={p.severity > 0.8 ? 'High' : 'Medium'}
+            // We are now sending the raw number, and falling back to 1.0 if it is missing
+            severity={typeof p.severity === 'number' ? p.severity : Number(p.severity) || 1.0} 
           />
         ))}
       </MapView>
 
-      {/* ── SEARCH OVERLAY ── */}
       <View style={styles.searchWrapper}>
         <NominatimAutocomplete
           placeholder="📍 From (Source)"
@@ -347,7 +329,6 @@ export default function RouteMapScreen() {
         />
       </View>
 
-      {/* ── ROUTE LOADING SPINNER ── */}
       {routeLoading && (
         <View style={styles.routeLoadingBanner}>
           <ActivityIndicator size="small" color="#fff" />
@@ -355,7 +336,6 @@ export default function RouteMapScreen() {
         </View>
       )}
 
-      {/* ── DEBUG BANNER ── */}
       <View style={styles.debugBanner}>
         <Text style={styles.debugText}>🔍 {debugText}</Text>
         <Text style={styles.debugCoords}>
@@ -366,7 +346,6 @@ export default function RouteMapScreen() {
         </Text>
       </View>
 
-      {/* ── ROUTE INFO CARD ── */}
       {routeInfo && (
         <View style={styles.routeInfoCard}>
           <Text style={styles.routeInfoText}>🛣️ {routeInfo.distance}</Text>
@@ -380,7 +359,6 @@ export default function RouteMapScreen() {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'white' },
   map: { width: '100%', height: '100%' },
