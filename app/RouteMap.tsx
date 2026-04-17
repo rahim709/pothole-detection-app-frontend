@@ -16,7 +16,7 @@ import PotholeCard from '../components/PotholeCard';
 // ─── API KEYS ─────────────────────────────────────────────────────────────────
 const GOOGLE_MAPS_APIKEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'YOUR_GOOGLE_MAPS_API_KEY';
 const ORS_API_KEY = process.env.EXPO_PUBLIC_ORS_API_KEY || 'YOUR_ORS_API_KEY';
-const POTHOLE_API_URL = process.env.EXPO_PUBLIC_POTHOLE_API_URL || "YOUR_POTHOLE_API_URL";
+const POTHOLE_API_URL = process.env.EXPO_PUBLIC_POTHOLE_API_URL || "YOUR_POTHOLE_API_URL" || "http://10.159.100.113:3000/api/potholes/report";
 
 // ─── Nominatim Autocomplete ───────────────────────────────────────────────────
 interface NominatimProps {

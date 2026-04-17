@@ -36,7 +36,6 @@ export default function PotholeCard({ coordinate, severity }: PotholeProps) {
       coordinate={coordinate}
       title={`${levelString} Severity Pothole`}
       description={`Severity Score: ${severity.toFixed(1)}`}
-      tracksViewChanges={false} // Keeps the map fast!
     >
       {/* Custom Warning Badge */}
       <View
